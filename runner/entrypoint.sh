@@ -10,4 +10,4 @@ TOKEN=$(curl -v -X POST -H "authorization: token ${GITHUB_PAT}" "https://api.git
   --unattended \
   --replace
 
-exec ./bin/runsvc.sh
+exec ./run.sh --once
