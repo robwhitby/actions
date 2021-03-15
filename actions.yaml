@@ -1,0 +1,153 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: actions
+---
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: github-pat
+#   namespace: actions
+# type: Opaque
+# stringData:
+#   GITHUB_PAT: XXXXX
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: actions
+  namespace: actions
+  labels:
+    app: actions
+spec:
+  ports:
+  - name: metrics
+    port: 8000
+    targetPort: metrics
+    protocol: TCP
+  selector:
+    app: actions
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: runners
+  namespace: actions
+spec:
+  selector:
+    matchLabels:
+      app: actions
+  serviceName: actions
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: actions
+    spec:
+      terminationGracePeriodSeconds: 3600
+      volumes:
+      - name: runner-work
+        emptyDir: {}
+      - name: runner-logs
+        emptyDir: {}
+      - name: mtail-progs
+        configMap:
+          name: mtail-config
+      - name: docker-storage
+        emptyDir: {}
+      - name: docker-certs
+        emptyDir: {}
+      containers:
+      - name: runner
+        env:
+        - name: DOCKER_TLS_CERTDIR
+          value: /certs
+        - name: DOCKER_HOST
+          value: tcp://localhost:2376
+        - name: DOCKER_TLS_VERIFY
+          value: "1"
+        - name: DOCKER_CERT_PATH
+          value: /certs/client
+        - name: GITHUB_ORG
+          value: springernature
+        - name: ACTIONS_RUNNER_INPUT_LABELS
+          value: robrunner
+        envFrom:
+        - secretRef:
+            name: github-pat
+        image: runner
+        imagePullPolicy: IfNotPresent
+        resources: {}
+        volumeMounts:
+        - mountPath: /certs
+          name: docker-certs
+        - mountPath: /home/runner/_diag
+          name: runner-logs
+        - mountPath: /home/runner/_work
+          name: runner-work
+      - name: docker
+        env:
+        - name: DOCKER_TLS_CERTDIR
+          value: /certs
+        image: docker:stable-dind
+        imagePullPolicy: IfNotPresent
+        args:
+        - --mtu=1430
+        resources: {}
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - mountPath: /var/lib/docker
+          name: docker-storage
+        - mountPath: /certs
+          name: docker-certs
+        - mountPath: /home/runner/_work
+          name: runner-work
+      - name: metrics
+        image: mtail
+        args: ["--logtostderr", "--logs", "/logs/*", "--progs", "/progs"]
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: metrics
+          containerPort: 3903
+        volumeMounts:
+        - mountPath: /logs
+          name: runner-logs
+        - mountPath: /progs
+          name: mtail-progs
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mtail-config
+  namespace: actions
+data:
+  metrics.mtail: |
+    gauge actions_busy
+    hidden counter init
+    init == 0 {
+        actions_busy = 0
+        init++
+    }
+    /.*Running job:.*/ {
+      actions_busy = 1
+    }
+    /.*Job .* completed.*/ {
+      actions_busy = 0
+    }
+---
+kind: ServiceMonitor
+apiVersion: monitoring.coreos.com/v1
+metadata:
+  name: actions
+  namespace: actions
+  labels:
+    app: actions
+spec:
+  selector:
+    matchLabels:
+      app: actions
+  endpoints:
+  - port: metrics
